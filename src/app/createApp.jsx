@@ -17,11 +17,22 @@ import { ConfigStorageService } from '../services/configStorageService.js';
 import { ServiceError, MissingDependencyError } from '../services/errors.js';
 import { normalizeRuntime } from '../runtime/runtimeConfig.js';
 import { PREDEFINED_RULE_SETS, SING_BOX_CONFIG, SING_BOX_CONFIG_V1_11, generateSubconverterConfig } from '../config/index.js';
+import { createLogger, setGlobalLogger } from '../utils/logger.js';
 
+const log = createLogger('App');
 const DEFAULT_USER_AGENT = 'curl/7.74.0';
 
 export function createApp(bindings = {}) {
     const runtime = normalizeRuntime(bindings);
+    
+    if (runtime.logger) {
+        setGlobalLogger(runtime.logger);
+    }
+    
+    log.info('🚀 Application initialized', {
+        hasKv: !!runtime.kv,
+        hasAssetFetcher: !!runtime.assetFetcher
+    });
     const services = {
         shortLinks: runtime.kv ? new ShortLinkService(runtime.kv, { shortLinkTtlSeconds: runtime.config.shortLinkTtlSeconds }) : null,
         configStorage: runtime.kv ? new ConfigStorageService(runtime.kv, { configTtlSeconds: runtime.config.configTtlSeconds }) : null
@@ -69,11 +80,24 @@ export function createApp(bindings = {}) {
     });
 
     app.get('/singbox', async (c) => {
+        const requestStartTime = Date.now();
+        log.logRequest('/singbox', {
+            method: 'GET',
+            path: c.req.path,
+            queryString: c.req.querystring?.substring(0, 200)
+        });
+
         try {
             const config = c.req.query('config');
             if (!config) {
+                log.warn('⚠️ /singbox: Missing config parameter');
                 return c.text('Missing config parameter', 400);
             }
+
+            log.info('📥 /singbox: Config parameter received', {
+                configLength: config?.length,
+                configPreview: config?.substring(0, 100) + '...'
+            });
 
             const selectedRules = parseSelectedRules(c.req.query('selectedRules'));
             const customRules = parseJsonArray(c.req.query('customRules'));
@@ -86,19 +110,41 @@ export function createApp(bindings = {}) {
             const configId = c.req.query('configId');
             const lang = c.get('lang');
 
+            log.info('📋 /singbox: Request parameters', {
+                selectedRulesCount: selectedRules?.length || 0,
+                customRulesCount: customRules?.length || 0,
+                userAgent: ua?.substring(0, 50),
+                groupByCountry: groupByCountry,
+                includeAutoSelect: includeAutoSelect,
+                enableClashUI: enableClashUI,
+                configId: configId || '(none)',
+                lang: lang
+            });
+
             const requestedSingboxVersion = c.req.query('singbox_version') || c.req.query('sb_version') || c.req.query('sb_ver');
             const requestUserAgent = getRequestHeader(c.req, 'User-Agent');
             const singboxConfigVersion = resolveSingboxConfigVersion(requestedSingboxVersion, requestUserAgent);
 
+            log.info('🔧 /singbox: Sing-Box version resolved', {
+                requestedVersion: requestedSingboxVersion || '(auto)',
+                resolvedVersion: singboxConfigVersion,
+                clientUserAgent: requestUserAgent?.substring(0, 50)
+            });
+
             let baseConfig = singboxConfigVersion === '1.11' ? SING_BOX_CONFIG_V1_11 : SING_BOX_CONFIG;
             if (configId) {
+                log.info('🔧 /singbox: Loading stored config', { configId: configId });
                 const storage = requireConfigStorage(services.configStorage);
                 const storedConfig = await storage.getConfigById(configId);
                 if (storedConfig) {
                     baseConfig = storedConfig;
+                    log.info('✅ /singbox: Stored config loaded successfully');
+                } else {
+                    log.warn('⚠️ /singbox: Stored config not found, using default');
                 }
             }
 
+            log.info('🏗️ /singbox: Creating SingboxConfigBuilder');
             const builder = new SingboxConfigBuilder(
                 config,
                 selectedRules,
@@ -113,9 +159,23 @@ export function createApp(bindings = {}) {
                 singboxConfigVersion,
                 includeAutoSelect
             );
+
+            log.info('🏗️ /singbox: Building config');
             await builder.build();
+
+            const buildDuration = Date.now() - requestStartTime;
+            log.info('✅ /singbox: Config built successfully', {
+                outboundCount: builder.config?.outbounds?.length || 0,
+                ruleCount: builder.config?.route?.rules?.length || 0,
+                buildDurationMs: buildDuration
+            });
+
             return c.json(builder.config);
         } catch (error) {
+            log.error('❌ /singbox: Error building config', {
+                error: error.message,
+                stack: error.stack
+            });
             return handleError(c, error, runtime.logger);
         }
     });

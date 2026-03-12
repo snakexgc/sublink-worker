@@ -1,5 +1,8 @@
 const PATH_LENGTH = 7;
 
+import { createLogger } from './utils/logger.js';
+const log = createLogger('Utils');
+
 // 自定义的字符串前缀检查函数
 export function checkStartsWith(str, prefix) {
 	if (str === undefined || str === null || prefix === undefined || prefix === null) {
@@ -235,24 +238,46 @@ export function generateWebPath(length = PATH_LENGTH) {
 }
 
 export function parseServerInfo(serverInfo) {
+	log.debug('parseServerInfo: Parsing server info', { serverInfo: serverInfo });
+
 	if (!serverInfo || typeof serverInfo !== 'string') {
+		log.warn('parseServerInfo: Invalid server info', { serverInfo: serverInfo });
 		return { host: null, port: null };
 	}
 	let host, port;
 	if (serverInfo.startsWith('[')) {
+		log.debug('parseServerInfo: IPv6 address detected');
 		const closeBracketIndex = serverInfo.indexOf(']');
 		host = serverInfo.slice(1, closeBracketIndex);
-		port = serverInfo.slice(closeBracketIndex + 2); // +2 to skip ']:'
+		port = serverInfo.slice(closeBracketIndex + 2);
 	} else {
 		const lastColonIndex = serverInfo.lastIndexOf(':');
 		host = serverInfo.slice(0, lastColonIndex);
 		port = serverInfo.slice(lastColonIndex + 1);
 	}
-	return { host, port: parseInt(port) };
+	
+	const parsedPort = parseInt(port);
+	log.debug('parseServerInfo: Parsed successfully', {
+		host: host,
+		port: parsedPort,
+		isIPv6: serverInfo.startsWith('[')
+	});
+
+	return { host, port: parsedPort };
 }
 
 export function parseUrlParams(url) {
+	log.debug('parseUrlParams: Parsing URL', {
+		urlLength: url?.length,
+		urlPreview: url?.substring(0, 80)
+	});
+
 	const [, rest] = url.split('://');
+	if (!rest) {
+		log.error('parseUrlParams: Invalid URL format - no protocol separator', { url: url?.substring(0, 50) });
+		return { addressPart: '', params: {}, name: '' };
+	}
+
 	const [addressPart, ...remainingParts] = rest.split('?');
 	const paramsPart = remainingParts.join('?');
 
@@ -263,24 +288,44 @@ export function parseUrlParams(url) {
 	let name = fragmentParts.length > 0 ? fragmentParts.join('#') : '';
 	try {
 		name = decodeURIComponent(name);
-	} catch (error) { };
+	} catch (error) {
+		log.warn('parseUrlParams: Failed to decode name', { rawName: name });
+	};
+
+	log.debug('parseUrlParams: Parsed successfully', {
+		addressPart: addressPart?.substring(0, 50),
+		paramCount: Object.keys(params).length,
+		paramKeys: Object.keys(params),
+		name: name || '(unnamed)'
+	});
 
 	return { addressPart, params, name };
 }
 
 export function createTlsConfig(params) {
+	log.debug('createTlsConfig: Creating TLS config', {
+		security: params.security,
+		sni: params.sni,
+		host: params.host,
+		allowInsecure: params.allowInsecure,
+		insecure: params.insecure,
+		allow_insecure: params.allow_insecure,
+		hasPbk: !!params.pbk,
+		hasSid: !!params.sid
+	});
+
 	let tls = { enabled: false };
 	if (params.security && params.security !== 'none') {
 		tls = {
 			enabled: true,
 			server_name: params.sni || params.host,
 			insecure: !!params?.allowInsecure || !!params?.insecure || !!params?.allow_insecure,
-			// utls: {
-			//   enabled: true,
-			//   fingerprint: "chrome"
-			// },
 		};
 		if (params.security === 'reality') {
+			log.debug('createTlsConfig: Reality security detected', {
+				hasPublicKey: !!params.pbk,
+				hasShortId: !!params.sid
+			});
 			tls.reality = {
 				enabled: true,
 				public_key: params.pbk,
@@ -288,6 +333,14 @@ export function createTlsConfig(params) {
 			};
 		}
 	}
+
+	log.debug('createTlsConfig: TLS config created', {
+		tlsEnabled: tls.enabled,
+		serverName: tls.server_name,
+		insecure: tls.insecure,
+		hasReality: !!tls.reality
+	});
+
 	return tls;
 }
 
